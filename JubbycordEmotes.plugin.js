@@ -8,21 +8,25 @@
 module.exports = class JubbycordEmotes {
   constructor(meta) {
     this.name = meta.name;
-    this.defaults = { login: "haxitydota", twitchId: "42649203", sevenTvSets: "01H3ZQJDPG000FFX1CY9011KZQ", use7tv: true, useBttv: true, useFfz: true, useGlobal: false, size: 28, autocomplete: true, minChars: 1, jumbo: true, jumboSize: 48 };
+    this.defaults = { channels: "haxitydota, pooploofster", sevenTvSets: "01H3ZQJDPG000FFX1CY9011KZQ, 01K87B9A2AD2CW1WA3S6EQJ38F", use7tv: true, useBttv: true, useFfz: true, useGlobal: false, size: 28, autocomplete: true, minChars: 1, jumbo: true, jumboSize: 48 };
     this.emotes = {};
     this.imgCache = new Map();
     this.SEL = '[id^="message-content-"], [class*="repliedTextContent"], [class*="embedDescription"]';
     this.queue = new Set();
     this.scheduled = false;
+    this.seedIds = { haxitydota: "42649203", pooploofster: "169423343"}; // known channel -> Twitch ID, no lookup needed
     this.timers = []; this.stopped = false;
     this.names = []; this.matches = []; this.sel = 0; this.tok = null; this.pop = null;
   }
 
   // ---------- settings ----------
   get cfg() {
-    const c = { ...this.defaults, ...(BdApi.Data.load(this.name, "cfg") || {}) };
+    const saved = BdApi.Data.load(this.name, "cfg") || {};
+    const c = { ...this.defaults, ...saved };
+    // settings saved by the single-channel version: carry the old channel over
+    if (saved.channels === undefined && (saved.twitchId || saved.login)) c.channels = saved.twitchId || saved.login;
     // blank text fields fall back to the built-in defaults
-    for (const k of ["login", "twitchId", "sevenTvSets"]) if (!c[k]) c[k] = this.defaults[k];
+    for (const k of ["channels", "sevenTvSets"]) if (!c[k]) c[k] = this.defaults[k];
     return c;
   }
   saveCfg(c) { BdApi.Data.save(this.name, "cfg", c); }
@@ -55,7 +59,7 @@ module.exports = class JubbycordEmotes {
 
   cacheKey() {
     const c = this.cfg;
-    return JSON.stringify([c.twitchId, c.sevenTvSets, c.use7tv, c.useBttv, c.useFfz, c.useGlobal]);
+    return JSON.stringify([c.channels, c.sevenTvSets, c.use7tv, c.useBttv, c.useFfz, c.useGlobal]);
   }
 
   // Load emotes at launch: instantly from cache, then refresh from the network (with retries).
@@ -70,7 +74,7 @@ module.exports = class JubbycordEmotes {
     const delays = [0, 3000, 8000, 20000, 45000];
     const tryLoad = async () => {
       if (this.stopped) return;
-      const r = await this.buildEmotes(false);
+      const r = await this.buildEmotes();
       if (this.stopped) return;
       if (r.count > 0) { this.rescan(); return; }
       if (++attempt < delays.length) this.later(tryLoad, delays[attempt]);
@@ -110,17 +114,35 @@ module.exports = class JubbycordEmotes {
     }
   }
 
-  async buildEmotes(forceLookup) {
+  // Turn a username or numeric ID into a Twitch user ID.
+  async resolveChannel(entry, errors) {
+    if (/^\d+$/.test(entry)) return entry;
+    const key = entry.toLowerCase();
+    if (this.seedIds[key]) return this.seedIds[key];
+    const ids = BdApi.Data.load(this.name, "ids") || {};
+    if (ids[key]) return ids[key];
+    try {
+      const r = await this.json("https://api.ivr.fi/v2/twitch/user?login=" + encodeURIComponent(key));
+      if (r && r[0] && r[0].id) {
+        ids[key] = r[0].id;
+        BdApi.Data.save(this.name, "ids", ids);
+        return r[0].id;
+      }
+      throw new Error("user not found");
+    } catch (e) {
+      errors.push(`Twitch lookup (${entry}): ${e.message}`);
+      return null;
+    }
+  }
+
+  async buildEmotes() {
     const c = this.cfg, map = {}, errors = [];
     const run = async (label, fn) => { try { await fn(); } catch (e) { errors.push(`${label}: ${e.message}`); } };
 
-    let id = c.twitchId;
-    if ((!id || forceLookup) && c.login) {
-      await run("Twitch lookup", async () => {
-        const r = await this.json("https://api.ivr.fi/v2/twitch/user?login=" + encodeURIComponent(c.login));
-        if (r && r[0] && r[0].id) { id = r[0].id; this.saveCfg({ ...c, twitchId: id }); }
-        else throw new Error("user not found");
-      });
+    const ids = [];
+    for (const entry of c.channels.split(/[\s,]+/).filter(Boolean)) {
+      const id = await this.resolveChannel(entry, errors);
+      if (id && !ids.includes(id)) ids.push(id);
     }
 
     if (c.useGlobal) {
@@ -128,13 +150,14 @@ module.exports = class JubbycordEmotes {
       if (c.useBttv) await run("BTTV global", async () => this.addBttv(await this.json("https://api.betterttv.net/3/cached/emotes/global"), map));
       if (c.useFfz) await run("FFZ global", async () => this.addFfz(await this.json("https://api.frankerfacez.com/v1/set/global"), map));
     }
-    if (id) {
-      if (c.useFfz) await run("FFZ channel", async () => this.addFfz(await this.json(`https://api.frankerfacez.com/v1/room/id/${id}`), map));
-      if (c.useBttv) await run("BTTV channel", async () => {
+    // Last-added wins on a name clash, so go through channels in reverse: the first one listed has priority.
+    for (const id of ids.slice().reverse()) {
+      if (c.useFfz) await run(`FFZ ${id}`, async () => this.addFfz(await this.json(`https://api.frankerfacez.com/v1/room/id/${id}`), map));
+      if (c.useBttv) await run(`BTTV ${id}`, async () => {
         const d = await this.json(`https://api.betterttv.net/3/cached/users/twitch/${id}`);
         this.addBttv(d.channelEmotes, map); this.addBttv(d.sharedEmotes, map);
       });
-      if (c.use7tv) await run("7TV channel", async () => this.add7tv((await this.json(`https://7tv.io/v3/users/twitch/${id}`)).emote_set, map));
+      if (c.use7tv) await run(`7TV ${id}`, async () => this.add7tv((await this.json(`https://7tv.io/v3/users/twitch/${id}`)).emote_set, map));
     }
     if (c.use7tv) {
       for (const sid of c.sevenTvSets.split(/[\s,]+/).filter(Boolean)) {
@@ -206,7 +229,7 @@ module.exports = class JubbycordEmotes {
 
   applyStyle() {
     BdApi.DOM.removeStyle(this.name);
-    BdApi.DOM.addStyle(this.name, `img.de-emote{height:${this.cfg.size}px;width:auto;vertical-align:middle;margin:0 1px;object-fit:contain;display:inline-block}img.de-emote.de-jumbo{height:${this.cfg.jumboSize || 36}px;margin:2px 2px}`);
+    BdApi.DOM.addStyle(this.name, `img.de-emote{height:${this.cfg.size}px;width:auto;vertical-align:middle;margin:0 1px;object-fit:contain;display:inline-block}img.de-emote.de-jumbo{height:${this.cfg.jumboSize || 48}px;margin:2px 2px}`);
   }
 
   // ---------- autocomplete ----------
@@ -433,8 +456,7 @@ module.exports = class JubbycordEmotes {
       i.onchange = () => (c[key] = i.checked);
       w.append(i, " " + label); root.appendChild(w);
     };
-    field("Twitch username", "login", "text", "streamer's twitch login");
-    field("Twitch channel ID (optional, overrides username)", "twitchId");
+    field("Twitch channels (usernames or IDs, comma separated; earlier ones win name clashes)", "channels", "text", "haxitydota, otherstreamer");
     field("Extra 7TV emote set IDs (comma separated)", "sevenTvSets");
     check("7TV", "use7tv"); check("BTTV", "useBttv"); check("FFZ", "useFfz");
     check("Include global emotes", "useGlobal");
@@ -450,14 +472,10 @@ module.exports = class JubbycordEmotes {
     const status = document.createElement("div");
     status.style.whiteSpace = "pre-wrap";
     btn.onclick = async () => {
-      const old = this.cfg;
-      // username changed without a manual ID -> redo the lookup
-      const changed = c.login !== old.login && c.twitchId === old.twitchId;
-      if (changed) c.twitchId = "";
       this.saveCfg(c);
       this.applyStyle();
       status.textContent = "Loading emotes…";
-      const r = await this.buildEmotes(false);
+      const r = await this.buildEmotes();
       this.scan(document.body);
       status.textContent = `Loaded ${r.count} emotes.` + (r.errors.length ? "\nProblems:\n" + r.errors.join("\n") : "");
     };
