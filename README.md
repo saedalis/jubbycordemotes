@@ -3,7 +3,7 @@ Renders Uncxity's Emotes in Discord. It uses semicolons instead of colons to not
 
 To install:
 
-Install Better Discord.
+[Install Better Discord](https://betterdiscord.app/)
 
 Copy JubbycordEmotes.plug.js into the Better Discord Plugin Folder.
 
