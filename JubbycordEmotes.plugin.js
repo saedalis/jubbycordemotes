@@ -8,7 +8,7 @@
 module.exports = class JubbycordEmotes {
   constructor(meta) {
     this.name = meta.name;
-    this.defaults = { login: "haxitydota", twitchId: "42649203", sevenTvSets: "01H3ZQJDPG000FFX1CY9011KZQ", use7tv: true, useBttv: true, useFfz: true, useGlobal: true, size: 28, autocomplete: true, minChars: 1 };
+    this.defaults = { login: "haxitydota", twitchId: "42649203", sevenTvSets: "01H3ZQJDPG000FFX1CY9011KZQ", use7tv: true, useBttv: true, useFfz: true, useGlobal: false, size: 28, autocomplete: true, minChars: 1, jumbo: true, jumboSize: 48 };
     this.emotes = {};
     this.imgCache = new Map();
     this.SEL = '[id^="message-content-"], [class*="repliedTextContent"], [class*="embedDescription"]';
@@ -175,6 +175,18 @@ module.exports = class JubbycordEmotes {
       }
       t.replaceWith(frag);
     }
+    this.updateJumbo(el);
+  }
+
+  // Make emotes larger when a message contains nothing but emotes.
+  updateJumbo(el) {
+    const imgs = el.querySelectorAll("img.de-emote");
+    if (!imgs.length) return;
+    const isMessage = el.matches('[id^="message-content-"]');
+    const only = this.cfg.jumbo && isMessage &&
+      el.textContent.trim() === "" &&
+      !el.querySelector("img:not(.de-emote)");
+    imgs.forEach((img) => img.classList.toggle("de-jumbo", !!only));
   }
 
   scan(node) {
@@ -194,7 +206,7 @@ module.exports = class JubbycordEmotes {
 
   applyStyle() {
     BdApi.DOM.removeStyle(this.name);
-    BdApi.DOM.addStyle(this.name, `img.de-emote{height:${this.cfg.size}px;width:auto;vertical-align:middle;margin:0 1px;object-fit:contain;display:inline-block}`);
+    BdApi.DOM.addStyle(this.name, `img.de-emote{height:${this.cfg.size}px;width:auto;vertical-align:middle;margin:0 1px;object-fit:contain;display:inline-block}img.de-emote.de-jumbo{height:${this.cfg.jumboSize || 36}px;margin:2px 2px}`);
   }
 
   // ---------- autocomplete ----------
@@ -427,6 +439,8 @@ module.exports = class JubbycordEmotes {
     check("7TV", "use7tv"); check("BTTV", "useBttv"); check("FFZ", "useFfz");
     check("Include global emotes", "useGlobal");
     field("Emote height (px)", "size", "number");
+    check("Larger emotes when a message is only emotes", "jumbo");
+    field("Large emote height (px)", "jumboSize", "number", "", 48);
     check("Autocomplete popup (type ; then a name; Tab/Enter to accept, Esc to dismiss)", "autocomplete");
     field("Autocomplete: minimum characters after the ;", "minChars", "number", "", 1);
 
